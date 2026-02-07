@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     db_name: str
     db_password: str
     db_host: str
+    DATABASE_URL: str
     api_key: str
     AV_KEY: str
     TAVILY_API_KEY: str
