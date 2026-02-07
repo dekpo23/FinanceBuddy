@@ -12,6 +12,8 @@ langgraph
 langchain-chroma
 langchain-mcp-adapters
 fastmcp
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
 
 PyPortfolioOpt
 tavily-python
