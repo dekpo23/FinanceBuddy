@@ -1,0 +1,85 @@
+{
+    "version": "1.0",
+    "goal": "Understand user's saving goals, capital preservation needs, and passive income preferences",
+    "track": "conservative",
+    "questions": [
+        {
+            "id": "c1",
+            "text": "What is your primary financial priority?",
+            "type": "choice",
+            "options": [
+                "Changes nothing, just need a safe place for my money",
+                "Beating Inflation (Preserving purchasing power)",
+                "Building an Emergency Fund",
+                "Saving for a specific goal (Rent, Fees, Wedding)",
+                "Steady Passive Income"
+            ]
+        },
+        {
+            "id": "c2",
+            "text": "What is your preferred investment duration for these funds?",
+            "type": "choice",
+            "options": [
+                "Very Short Term (< 3 months)",
+                "Short Term (3 - 12 months)",
+                "Medium Term (1 - 3 years)",
+                "Long Term (5+ years)"
+            ]
+        },
+        {
+            "id": "c3",
+            "text": "How do you feel about locking your funds for higher returns?",
+            "type": "choice",
+            "options": [
+                "I need instant access anytime (Liquidity first)",
+                "I can lock funds for 3-6 months",
+                "I can lock funds for 1 year or more"
+            ]
+        },
+        {
+            "id": "c4",
+            "text": "Which of these instruments are you most comfortable with?",
+            "type": "multi_choice",
+            "options": [
+                "High Yield Savings Accounts (Fintechs)",
+                "Treasury Bills (Government Backed)",
+                "Fixed Deposits (Bank)",
+                "Dollar Mutual Funds",
+                "Real Estate (REITs)"
+            ]
+        },
+        {
+            "id": "c5",
+            "text": "What is your target annual return?",
+            "type": "choice",
+            "options": [
+                "10-15% (Low Risk / Standard Savings)",
+                "15-20% (Medium Risk / T-Bills)",
+                "20%+ (High Risk / I understand this might not be guaranteed conservatively)"
+            ]
+        },
+        {
+            "id": "c6",
+            "text": "What amount are you looking to start saving/investing?",
+            "type": "range",
+            "currency": "NGN",
+            "options": [
+                "Under ₦50,000",
+                "₦50,000 - ₦200,000",
+                "₦200,000 - ₦1,000,000",
+                "₦1,000,000 - ₦5,000,000",
+                "Over ₦5,000,000"
+            ]
+        },
+        {
+            "id": "c7",
+            "text": "Are you saving in Naira or Dollars?",
+            "type": "choice",
+            "options": [
+                "Naira Only",
+                "Dollars Only",
+                "Both"
+            ]
+        }
+    ]
+}
