@@ -47,7 +47,7 @@ class InvestmentChatbot:
         self.thread_id = thread_id
         
         # Database Connection String for LangGraph Checkpointer
-        self.db_url = f"postgresql://{os.getenv('db_user')}:{os.getenv('db_password')}@{os.getenv('db_host')}:{os.getenv('db_port')}/{os.getenv('db_name')}"
+        self.db_url = os.getenv("DATABASE_URL")
         
         # Resolve absolute paths to ensure servers are found regardless of CWD
         base_dir = os.path.dirname(os.path.abspath(__file__))
