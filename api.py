@@ -1,13 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status, Body
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
-import os
+
 import sys
 import asyncio
 import json
-import base64
+
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -17,13 +18,21 @@ from models import User, PortfolioItem, Onboarding
 from schemas import UserCreate, UserResponse, Token, ChatRequest, OnboardingSubmission, OnboardingResponse
 from chatbot import InvestmentChatbot
 from auth import authenticate_user, create_access_token, get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
-from agents.onboarding import get_trading_onboarding_questions, get_conservative_onboarding_questions, profiler_node
+from agents.onboarding import profiler_node, get_onboarding_schema
 import uvicorn
 
 # Initialize DB Tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Finance Buddy API", version="2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize Chatbot Instance
 chatbot = InvestmentChatbot()
@@ -32,63 +41,42 @@ chatbot = InvestmentChatbot()
 async def startup_event():
     await chatbot.initialize()
 
-from gtts import gTTS
-import io
 
-# --- Helper Functions ---
-
-def generate_tts_audio(text: str) -> str:
-    """
-    Generates audio from text using Google Text-to-Speech (gTTS).
-    Returns base64 encoded MP3.
-    """
-    try:
-        # Create a BytesIO buffer to hold the audio data in memory
-        mp3_fp = io.BytesIO()
-        
-        # Initialize gTTS with the text (English)
-        tts = gTTS(text=text, lang='en', tld='com.ng') # Use Nigerian accent if available via TLD or just generic 'com'
-        
-        # Write to buffer
-        tts.write_to_fp(mp3_fp)
-        
-        # Get the bytes
-        mp3_bytes = mp3_fp.getvalue()
-        
-        # Encode to base64
-        audio_b64 = base64.b64encode(mp3_bytes).decode('utf-8')
-        
-        return audio_b64
-    except Exception as e:
-        print(f"TTS Error: {e}")
-        # Fallback to silence if TTS fails
-        return "UklGRi4AAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQA=" 
 
 # --- Onboarding Endpoints ---
 
-
-
-@app.get("/onboarding/trading")
-async def get_trading_questions():
-    """Returns onboarding questions tailored for active traders."""
-    return {"questions": get_trading_onboarding_questions()}
-
-@app.get("/onboarding/conservative")
-async def get_conservative_questions():
-    """Returns onboarding questions tailored for conservative investors."""
-    return {"questions": get_conservative_onboarding_questions()}
+@app.get("/onboarding")
+def get_onboarding_questions_schema():
+    """
+    Returns the unified onboarding questions (JSON schema).
+    """
+    schema = get_onboarding_schema()
+    if not schema:
+        raise HTTPException(status_code=404, detail="Schema unavailable")
+    return schema
 
 @app.post("/onboarding/submit", response_model=OnboardingResponse)
 async def submit_onboarding(
-    submission: OnboardingSubmission, 
+    answers: dict = Body(..., example={
+        "q1": "Answer",
+        "q2": "Answer",
+        "q3": "Answer",
+        "q4": "Answer",
+        "q5": "Answer",
+        "q6": "Answer",
+        "q7": "Answer"
+    }), 
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Submits answers and generates a profile."""
+    """
+    Submits answers and generates a unified financial profile.
+    Body should be a JSON object where keys are question IDs and values are answers.
+    """
     # Check existing
     existing = db.query(Onboarding).filter(Onboarding.user_id == current_user.id).first()
     
-    answers_json = json.dumps(submission.answers)
+    answers_json = json.dumps(answers)
     
     if existing:
         existing.answers = answers_json
@@ -102,12 +90,9 @@ async def submit_onboarding(
     
     # --- Trigger Profiling ---
     try:
-        # Construct a minimal state for the profiler
-        # profiler_node expects state["onboarding_state"]["answers"]
-        # And also needs to be compatible with AgentState structure somewhat
         profile_state = {
             "onboarding_state": {
-                "answers": submission.answers
+                "answers": answers
             }
         }
         
@@ -131,43 +116,6 @@ async def submit_onboarding(
         derived_profile=json.loads(existing.derived_profile) if existing.derived_profile else None
     )
 
-# --- Audio Endpoint ---
-
-@app.post("/audio/chat")
-async def audio_chat(
-    file: UploadFile = File(...),
-    thread_id: str = Form("default"),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Receives an audio file (blob), transcribes it, runs the agent, and returns text + audio response.
-    """
-    # 1. Save uploaded file temporarily
-    temp_filename = f"temp_{file.filename}"
-    with open(temp_filename, "wb") as buffer:
-        buffer.write(await file.read())
-        
-    try:
-        # 2. Transcribe (Mocking STT)
-        user_text = "I want to invest 500k naira in high yield savings." # Mock transcription
-        
-        # 3. Process with Agent
-        response_text = await chatbot.chat(user_text, thread_id=str(current_user.id))
-        
-        # 4. Text-to-Speech
-        # audio_b64 = generate_tts_audio(response_text)
-        audio_b64 = None
-        
-        return {
-            "transcription": user_text,
-            "text_response": response_text,
-            "audio_base64": audio_b64,
-            "audio_format": "mp3"
-        }
-        
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
 
 # --- Chat Endpoints ---
 
@@ -214,27 +162,7 @@ def read_users_me(current_user: Annotated[User, Depends(get_current_user)]):
     """
     return current_user
 
-@app.post("/chat/greeting")
-async def chat_greeting(
-    current_user: Annotated[User, Depends(get_current_user)]
-):
-    """
-    Generates a proactive greeting based on the user's profile.
-    """
-    thread_id = str(current_user.id)
-    
-    # Generate Greeting
-    greeting_text = await chatbot.generate_greeting(thread_id=thread_id)
-    
-    # Generate Audio
-    # audio_b64 = generate_tts_audio(greeting_text)
-    audio_b64 = None
-    
-    return {
-        "text_response": greeting_text,
-        "audio_base64": audio_b64,
-        "audio_format": "mp3"
-    }
+
 
 @app.post("/chat")
 async def chat_with_agent(
@@ -242,23 +170,22 @@ async def chat_with_agent(
     current_user: Annotated[User, Depends(get_current_user)]
 ):
     """
-    **Intelligent Analyst Chat Endpoint**
+    **Banking & Investment Products Endpoint**
     
-    Initiates or continues a conversation with the Intelligent Trading Analyst.
-    Returns both text response and generated audio.
+    Handles low-to-moderate risk financial products:
+    - Treasury Bills
+    - Fixed Deposits / Money Market Funds
+    - Savings Instruments
+    
+    Does NOT handle active trading or stock picking (use `/chat/trading`).
     """
     thread_id = str(current_user.id)
-    
-    # Pass thread_id securely to the chat method
-    response_text = await chatbot.chat(request.message, thread_id=thread_id)
-    
-    # Generate Audio
-    # audio_b64 = generate_tts_audio(response_text)
-    audio_b64 = None
+    # Default intent for main chat is now Banking/Investment
+    response_text = await chatbot.chat(request.message, thread_id=thread_id, intent="general") 
     
     return {
         "text_response": response_text,
-        "audio_base64": audio_b64,
+        "audio_base64": None,
         "audio_format": "mp3"
     }
 
@@ -268,59 +195,71 @@ async def chat_budgeting(
     current_user: Annotated[User, Depends(get_current_user)]
 ):
     """
-    **Budgeting Assistant Endpoint**
+    **Budgeting & Cashflow Endpoint**
     
-    Specific endpoint for budgeting, debt management, and expense tracking advice.
-    Forces the chatbot to use the Budgeting Expert persona.
+    Focuses on income, expenses, debt management, and actionable savings steps.
     """
     thread_id = str(current_user.id)
     response_text = await chatbot.chat(request.message, thread_id=thread_id, intent="budgeting")
-    # audio_b64 = generate_tts_audio(response_text)
-    audio_b64 = None
     
     return {
         "text_response": response_text,
-        "audio_base64": audio_b64,
+        "audio_base64": None,
         "audio_format": "mp3"
     }
 
-@app.post("/chat/investment")
-async def chat_investment(
+@app.post("/chat/trading")
+async def chat_trading(
     request: ChatRequest, 
     current_user: Annotated[User, Depends(get_current_user)]
 ):
     """
-    **Investment Analyst Endpoint**
+    **Active Trading Endpoint**
     
-    Specific endpoint for active trading analysis and investment proposals.
-    Forces the chatbot to use the Investment Analyst persona.
+    Handles:
+    - Stocks & ETFs (NGX, US)
+    - Portfolio Construction
+    - Active Investment Strategies
     """
     thread_id = str(current_user.id)
-    # Defaulting to 'trading' for active analysis, or 'investment_options' for passive.
-    # Given 'Analyst' persona, 'trading' fits best.
     response_text = await chatbot.chat(request.message, thread_id=thread_id, intent="trading")
-    # audio_b64 = generate_tts_audio(response_text)
-    audio_b64 = None
     
     return {
         "text_response": response_text,
-        "audio_base64": audio_b64,
+        "audio_base64": None,
         "audio_format": "mp3"
     }
 
-@app.get("/portfolio")
-def get_user_portfolio(current_user: Annotated[User, Depends(get_current_user)], db: Session = Depends(get_db)):
+@app.get("/portfolio", response_model=list[dict]) 
+def get_portfolio_recommendations(
+    current_user: Annotated[User, Depends(get_current_user)], 
+    db: Session = Depends(get_db)
+):
     """
-    **Get User Portfolio**
+    **Get Portfolio Recommendations**
     
-    Retrieves the current stock holdings for the authenticated user from the local database.
-    
-    *Note*: This returns the *recorded* portfolio state. Real-time broker positions are not currently integrated.
+    Retrieves the history of portfolio recommendations generated by the Trading Agent.
+    Returns: List of portfolio objects with versioning/timestamps.
     """
-    items = db.query(PortfolioItem).filter(PortfolioItem.user_id == current_user.id).all()
-    return {"user": current_user.username, "holdings": items}
+    # Import locally to avoid circular import issues if placed at top before models is fully loaded
+    from models import PortfolioRecommendation
+    
+    recs = db.query(PortfolioRecommendation).filter(PortfolioRecommendation.user_id == current_user.id).order_by(PortfolioRecommendation.created_at.desc()).all()
+    
+    results = []
+    for r in recs:
+        results.append({
+            "id": r.id,
+            "portfolio": json.loads(r.portfolio),
+            "risk_level": r.risk_level,
+            "created_at": r.created_at
+        })
+        
+    return results
 
 @app.get("/")
 def home():
-    return {"message": "InvestmentBrain API is Online. Go to /docs for Swagger UI."}
+    return {"message": "Finance Buddy API is Online. Go to /docs for Swagger UI."}
 
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)

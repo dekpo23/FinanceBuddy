@@ -44,48 +44,26 @@ Base URL: `http://localhost:8000` (or deployed URL)
 
 ---
 
-## Onboarding (First Time User)
+### 1. Get Questions
+**GET** `/onboarding`
+- **Response:** JSON object containing the unified set of onboarding questions.
 
-### 1. Get Questions (Conservative Track)
-**GET** `/onboarding/conservative`
-
-### 2. Get Questions (Trading Track)
-**GET** `/onboarding/trading`
-
-### 3. Submit Answers
+### 2. Submit Answers
 **POST** `/onboarding/submit`
 
-This endpoint accepts the user's answers to the onboarding questions. 
-- You do NOT need to answer all questions if skipped, but providing more data improves the profile.
-- The `answers` keys must match the question IDs found in the GET response (e.g. `c1`, `t1`).
+**Body:**
+A simple JSON object where keys are question IDs and values are the user's answers.
 
-**Body Example (Conservative Track):**
+**Example:**
 ```json
 {
-  "answers": {
-    "c1": "Beating Inflation (Preserving purchasing power)",
-    "c2": "Medium Term (1 - 3 years)",
-    "c3": "I can lock funds for 3-6 months",
-    "c4": ["Treasury Bills (Government Backed)", "Fixed Deposits (Bank)"],
-    "c5": "15-20% (Medium Risk / T-Bills)",
-    "c6": "₦200,000 - ₦1,000,000",
-    "c7": "Naira Only"
-  }
-}
-```
-
-**Body Example (Trading Track):**
-```json
-{
-  "answers": {
-    "t1": "Daily Income Generation (Day Trading)",
-    "t2": "Novice (< 1 year)",
-    "t3": "High (Willing to risk 20%+ for high returns)",
-    "t4": ["Crypto (Bitcoin, Altcoins)", "Forex/Currencies"],
-    "t5": "1-2 hours",
-    "t6": "$2,000 - $10,000",
-    "t7": "Never (Cash only)"
-  }
+  "q1": "Aggressive Wealth Growth",
+  "q2": "Hold and wait for recovery",
+  "q3": "Over 10,000,000",
+  "q4": "Long Term (5+ years)",
+  "q5": "Balanced",
+  "q6": "Intermediate",
+  "q7": "Naira Only"
 }
 ```
 
@@ -95,7 +73,7 @@ Returns the generated `derived_profile`.
 {
     "id": 1,
     "user_id": 1,
-    "answers": { ... },
+    "answers": { "q1": "..." },
     "derived_profile": {
         "risk_score": 7,
         "investor_type": "Growth",
@@ -106,21 +84,10 @@ Returns the generated `derived_profile`.
 
 ---
 
-## Chat & Greeting
+## Chat
 
-### 1. Get Personalized Greeting
-**POST** `/chat/greeting`
-- **Body:** Empty JSON `{}` (or no body).
-- **Response:**
-```json
-{
-  "text_response": "Hi David! Given your conservative profile...",
-  "audio_base64": "SUQzBAAAAA...",
-  "audio_format": "mp3"
-}
-```
 
-### 2. Budgeting Chat (NEW)
+### 1. Budgeting Chat (NEW)
 **POST** `/chat/budgeting`
 - Use this for "Budget Helper" mode. It forces the AI to focus on savings/debt.
 **Body:**
@@ -130,7 +97,7 @@ Returns the generated `derived_profile`.
 }
 ```
 
-### 3. Investment Analyst Chat (NEW)
+### 2. Investment Analyst Chat (NEW)
 **POST** `/chat/investment`
 - Use this for "Investment Analyst" mode (Stocks, T-Bills, Market Analysis).
 **Body:**
@@ -140,7 +107,7 @@ Returns the generated `derived_profile`.
 }
 ```
 
-### 4. General Chat (Router)
+### 3. General Chat (Router)
 **POST** `/chat`
 - Automatically routes to budget or investment based on context.
 **Body:**

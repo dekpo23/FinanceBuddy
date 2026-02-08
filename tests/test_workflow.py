@@ -33,7 +33,7 @@ class TestInvestmentChatbot(unittest.IsolatedAsyncioTestCase):
         mock_get_db.return_value = iter([mock_db_session])
         
         # Mock User in DB
-        mock_user = User(username="demo_user", age=25, risk_tolerance="Medium", investment_amount=10000.0, time_horizon_years=5)
+        mock_user = User(username="demo_user", age=25)
         # We query Onboarding first, then User. 
         # So first() should return None (no onboarding), then mock_user.
         mock_db_session.query.return_value.filter.return_value.first.side_effect = [None, mock_user]
@@ -63,9 +63,9 @@ class TestInvestmentChatbot(unittest.IsolatedAsyncioTestCase):
         mock_pool.return_value = mock_pool_instance
         
         # Mock Agent Execution
-        mock_agent_executor = MagicMock()
+        mock_agent_executor = AsyncMock()
         mock_agent.return_value = mock_agent_executor
-        mock_agent_executor.invoke.return_value = {"messages": [{"role": "assistant", "content": "I recommend buying AAPL."}]}
+        mock_agent_executor.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "I recommend buying AAPL."}]}
         
         # Initialize Chatbot
         bot = InvestmentChatbot()
@@ -86,15 +86,15 @@ class TestInvestmentChatbot(unittest.IsolatedAsyncioTestCase):
         state = {"messages": [{"role": "user", "content": "hi"}], "user_profile": {"age": 25, "risk": "Medium", "capital": 10000, "horizon": 5}}
         
         # Calls create_react_agent inside
-        response = bot._analyst_node(state)
+        response = await bot._analyst_node(state)
         
         # Now check if create_react_agent was called with correct system message
         args, kwargs = mock_agent.call_args
-        system_msg = kwargs.get('state_modifier', '')
+        system_msg = kwargs.get('prompt', '')
         
-        self.assertIn("Age 25", system_msg)
-        self.assertIn("Risk Medium", system_msg)
-        self.assertIn("Capital $10000", system_msg)
+        self.assertIn('"age": 25', system_msg)
+        self.assertIn('"risk": "Medium"', system_msg)
+        self.assertIn('"capital": 10000', system_msg)
         
         print("Test Passed: Agent Node logic verified with Profile Injection.")
         
@@ -107,11 +107,11 @@ class TestInvestmentChatbot(unittest.IsolatedAsyncioTestCase):
         
         # 2. Test _sentiment_node (Mocking create_sentiment_agent)
         with patch('chatbot.create_sentiment_agent') as mock_sentiment_factory:
-            mock_sentiment_executor = MagicMock()
+            mock_sentiment_executor = AsyncMock()
             mock_sentiment_factory.return_value = mock_sentiment_executor
-            mock_sentiment_executor.invoke.return_value = {"messages": [{"role": "assistant", "content": "Bullish sentiment."}]}
+            mock_sentiment_executor.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "Bullish sentiment."}]}
             
-            sent_result = bot._sentiment_node({"messages": [{"role": "user", "content": "analyze AAPL"}]})
+            sent_result = await bot._sentiment_node({"messages": [{"role": "user", "content": "analyze AAPL"}]})
             self.assertIn("Bullish", sent_result["messages"][0]["content"])
             
         # 3. Test _red_team_node (Mocking red_team_node function)
@@ -144,11 +144,12 @@ class TestInvestmentChatbot(unittest.IsolatedAsyncioTestCase):
         # Let's try to just return the content string directly, as some chains simplify this.
         mock_llm_instance.invoke.return_value = AIMessage(content="T-Bills are 15%")
         
-        inv_result = bot._investment_node_wrapper({"messages": [HumanMessage(content="What are T-Bill rates?")], "user_profile": {}})
+        mock_agent_executor.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "T-Bills are 15%"}]}
+        inv_result = await bot._banking_node({"messages": [HumanMessage(content="What are T-Bill rates?")], "user_profile": {}})
         
         # If the mock fails validation, it returns an error message.
         # We accept either the real answer or the error message (proving the node ran and caught the exception).
-        content = inv_result["messages"][0].content
+        content = inv_result["messages"][0]["content"]
         print(f"Investment Node Output: {content}")
         self.assertTrue("T-Bills" in content or "Error" in content)
             

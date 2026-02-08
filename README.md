@@ -20,14 +20,11 @@
 -   **Scraper**: `scripts/scrape_finance_data.py` fetches real-time rates (Savings, T-Bills) and platform details (Bamboo, Chaka, etc.) from the web.
 -   **Context-Aware**: The Investment Agent uses this local knowledge base (`data/*.md`) to provide accurate, up-to-date answers with citations.
 
-### 4. **Multi-Modal Interface (Audio)**
--   **Voice Support**: The API accepts audio files, transcribes them (mocked), processes the query, and returns both text and audio responses.
-
 ## System Architecture
 
 ```mermaid
 graph TD
-    User[User] -->|Text/Audio| API[FastAPI]
+    User[User] -->|Text| API[FastAPI]
     API -->|Thread ID| Orchestrator[Orchestrator Agent]
     
     subgraph "Routing Layer"
@@ -107,7 +104,6 @@ python api.py
     -   `POST /onboarding/submit`: Submit answers to generate profile.
 -   **Chat**:
     -   `POST /chat`: Text-based interaction.
-    -   `POST /audio/chat`: Upload audio file (`.wav`/`.mp3`), get text + audio response.
 
 ## Testing
 Run the integration tests to verify the workflow:

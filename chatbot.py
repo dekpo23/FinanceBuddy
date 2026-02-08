@@ -9,28 +9,21 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
+# from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver # Removed
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
+# import aiosqlite # Removed
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Onboarding
+from models import User, Onboarding, PortfolioRecommendation
 from langchain_core.messages import SystemMessage, HumanMessage
-
-# Import New Agent Logic
-from agents.red_team import red_team_node
-from agents.judge import judge_node
-from agents.sentiment import create_sentiment_agent
 from agents.onboarding import onboarding_node, profiler_node
 from agents.orchestrator import orchestrator_node
-from agents.investment_options import investment_options_node
-from agents.budgeting import budgeting_node
+from agents.sentiment import create_sentiment_agent
+from agents.red_team import red_team_node
+from agents.judge import judge_node
 
-# Force reload environment variables to ensure they are picked up
-load_dotenv(find_dotenv(), override=True)
-
-# Debug: Check if key is loaded
-if not os.getenv("TAVILY_API_KEY"):
-    print("WARNING: TAVILY_API_KEY not found in environment variables. Web search tools may fail.")
+# ... (rest of imports)
 
 # Define the State
 class AgentState(TypedDict):
@@ -39,7 +32,8 @@ class AgentState(TypedDict):
     thread_id: str
     onboarding_state: dict # keys: current_index, answers, complete
     derived_profile: dict # Result from profiler
-    intent: str # trading, investment_options, budgeting, general
+    intent: str # trading, investment_options (banking), budgeting, general
+    portfolio_recommendation: dict # To pass recommendation to persistence
 
 class InvestmentChatbot:
     def __init__(self, thread_id: str = "investor_demo_001"):
@@ -59,8 +53,6 @@ class InvestmentChatbot:
                 "transport": "stdio",
                 "env": {"FASTMCP_DISABLE_BANNER": "1", **os.environ} 
             },
-            # "institutional" server removed temporarily or updated if needed, 
-            # assuming finance_server.py is still the target but we might need to be careful with tools
             "institutional": {
                 "command": sys.executable,
                 "args": [os.path.join(base_dir, "finance_server.py")], 
@@ -74,7 +66,7 @@ class InvestmentChatbot:
                 "transport": "stdio"
             }
         }
-        
+
     def _fetch_user_profile(self, state: AgentState):
         """Node: Fetches or validates user profile from DB."""
         # Use the thread_id (which is the user_id) to fetch the user
@@ -82,24 +74,21 @@ class InvestmentChatbot:
             user_id = int(state["thread_id"])
         except ValueError:
             # Fallback if thread_id is not an int (e.g. uuid)
-            return {"user_profile": {"age": 30, "risk": "Medium", "capital": 10000, "horizon": 5}}
+            return {"user_profile": {"age": 30, "risk_profile": "moderate", "capital_range": "low_to_medium", "financial_literacy": "beginner"}}
 
         db = next(get_db())
         try:
             # Check for Onboarding Record
-            # We prefer the derived profile if available (this comment line is fine)
             onboarding_rec = db.query(Onboarding).filter(Onboarding.user_id == user_id).first()
             if onboarding_rec and onboarding_rec.derived_profile:
-                # If we have a full profile, parse and return it
                 try:
                     profile_data = json.loads(onboarding_rec.derived_profile)
-                    # Add flag to indicate we are ready
                     profile_data["needs_onboarding"] = False
                     return {"derived_profile": profile_data, "user_profile": profile_data}
                 except:
-                   pass # Fallback if JSON parse fails
+                    pass 
             
-            # If no full profile, fetch basic user info (age)
+            # If no full profile, fetch basic user info
             user = db.query(User).filter(User.id == user_id).first()
             
             # Default / Needs Onboarding
@@ -115,11 +104,15 @@ class InvestmentChatbot:
 
     async def initialize(self):
         """Setup connections and build the graph."""
-        # 1. Persistence Layer
+        # 1. Persistence Layer (Postgres)
+        # Ensure we have a valid URL
+        if not self.db_url:
+            raise ValueError("DATABASE_URL environment variable is not set.")
+
         self.pool = AsyncConnectionPool(conninfo=self.db_url, max_size=10, open=False)
         await self.pool.open()
         
-        # Run setup with autocommit to allow CREATE INDEX CONCURRENTLY
+        # Run setup to ensure tables exist
         async with self.pool.connection() as conn:
             await conn.set_autocommit(True)
             checkpointer = AsyncPostgresSaver(conn)
@@ -144,18 +137,18 @@ class InvestmentChatbot:
         workflow.add_node("orchestrator", self._orchestrator_node_wrapper)
         
         # Branches
-        workflow.add_node("general_chat", self._general_node)
-        workflow.add_node("investment_options", self._investment_node_wrapper)
-        workflow.add_node("budgeting", self._budgeting_node_wrapper)
+        workflow.add_node("general_chat", self._banking_node) # Remapped to Banking
+        workflow.add_node("investment_options", self._banking_node) # Remapped to Banking
+        workflow.add_node("budgeting", self._budgeting_node)
         
         # Trading Branch (Existing flow)
         workflow.add_node("sentiment_analysis", self._sentiment_node)
         workflow.add_node("analyst_proponent", self._analyst_node)
         workflow.add_node("red_team_skeptic", self._red_team_node)
         workflow.add_node("chief_investment_officer", self._judge_node)
+        workflow.add_node("persist_portfolio", self._persist_portfolio_node)
 
         # --- EDGES ---
-        # 1. Entry & Onboarding
         # 1. Entry & Onboarding
         workflow.add_edge(START, "fetch_profile")
         
@@ -180,14 +173,12 @@ class InvestmentChatbot:
         workflow.add_edge("profiler", "fetch_profile")
 
         # 2. Orchestration
-        # workflow.add_edge("fetch_profile", "orchestrator") # Removed direct edge, now conditional
-        
         workflow.add_conditional_edges(
             "orchestrator",
             self._route_intent,
             {
                 "trading": "sentiment_analysis",
-                "investment_options": "investment_options",
+                "investment_options": "general_chat", # Banking
                 "budgeting": "budgeting",
                 "general": "general_chat"
             }
@@ -198,7 +189,8 @@ class InvestmentChatbot:
         workflow.add_edge("sentiment_analysis", "analyst_proponent")
         workflow.add_edge("analyst_proponent", "red_team_skeptic")
         workflow.add_edge("red_team_skeptic", "chief_investment_officer")
-        workflow.add_edge("chief_investment_officer", END)
+        workflow.add_edge("chief_investment_officer", "persist_portfolio")
+        workflow.add_edge("persist_portfolio", END)
         
         # Other Flows
         workflow.add_edge("general_chat", END)
@@ -226,7 +218,6 @@ class InvestmentChatbot:
             
             db = next(get_db())
             try:
-                # Check for existing record
                 existing = db.query(Onboarding).filter(Onboarding.user_id == user_id).first()
                 if existing:
                     existing.answers = json.dumps(answers)
@@ -253,40 +244,97 @@ class InvestmentChatbot:
     def _orchestrator_node_wrapper(self, state):
         return orchestrator_node(state, self.llm)
 
-    def _investment_node_wrapper(self, state):
-        return investment_options_node(state, self.llm)
-
-    def _budgeting_node_wrapper(self, state):
-        return budgeting_node(state, self.llm)
+    async def _banking_node(self, state):
+        """Node: Banking & Investment Products (Non-Trading)."""
+        profile = state.get("user_profile", {})
         
-    def _general_node(self, state):
-        """Simple general chatbot for non-financial queries."""
-        msg = state["messages"][-1]
-        response = self.llm.invoke([
-            SystemMessage(content="You are a helpful Financial Assistant. Structure your answers clearly."),
-            msg
-        ])
-        return {"messages": [response]}
+        system_msg = f"""
+        You are a friendly Banking & Savings Consultant.
+        Your goal is to explain "safe" investments in simple, everyday language.
+        
+        User Profile: {json.dumps(profile)}
 
+        SCOPE ENFORCEMENT GRID:
+        - [ALLOWED]: Treasury Bills, Fixed Deposits, Savings Accounts, Mutual Funds, Money Market.
+        - [ALLOWED]: Banking Apps (GTBank, FirstBank, ALAT, etc.).
+        - [PROHIBITED]: Stock trading (Send to Trading Chat).
+        - [PROHIBITED]: General Knowledge (e.g. "What is photosynthesis?", "Who is the President?").
+        
+        If the user asks a PROHIBITED question:
+        - Politely decline: "I can only help with banking and safe investments. I cannot answer general questions."
+        - Do NOT answer the question.
+
+        Your Advice Must Be:
+        1. **Simple**: Explain "Treasury Bills" as "Lending money to the government for a fixed profit". Explain "Fixed Deposits" as "Locking your money in the bank for a higher interest rate".
+        2. **Specific**: Suggest actual Nigerian banks/apps where they can buy these (e.g. GTBank App, FirstBank, ALAT, PiggyVest, Cowrywise, Carbon).
+        3. **Transparent**: Clearly state: "Your money is locked for X months" or "You can get it back easily".
+
+        Response Template:
+        1. **Top Pick**: The best safe option for them (e.g. "90-day T-Bill").
+        2. **Why It Works**: One sentence explanation.
+        3. **Where to Get It**: "Log in to GTBank Mobile App > Investments".
+        4. **Trade-off**: "You can't touch the money for 90 days."
+        """
+        
+        agent_executor = create_react_agent(self.llm, self.mcp_tools, prompt=system_msg)
+        result = await agent_executor.ainvoke({"messages": state["messages"]})
+        return {"messages": [result["messages"][-1]]}
+
+    async def _budgeting_node(self, state):
+        """Node: Budgeting & Cashflow."""
+        profile = state.get("user_profile", {})
+        
+        system_msg = f"""
+        You are a Personal Finance Coach (Friendly, Non-Technical, and Practical).
+        
+        Your Mission: Help the user manage their money better in plain English.
+        - Focus on: Simple budgets, tracking spending, cutting waste, and building savings habits.
+        - Tone: Encouraging, ultra-simple, no financial jargon. Explain like I'm 5.
+        
+        User Profile: {json.dumps(profile)}
+
+        SCOPE ENFORCEMENT GRID:
+        - [ALLOWED]: Budgeting, Expense Tracking, Debt, Savings Habits, Emergency Funds.
+        - [PROHIBITED]: Investing (Stocks, T-Bills) -> Send to Investment Chat.
+        - [PROHIBITED]: General Knowledge (e.g. "What is photosynthesis?", "Who won the World Cup?").
+        
+        If the user asks a PROHIBITED question:
+        - Politely decline: "I strictly handle budgeting and savings habits. I do not answer general questions."
+        - Do NOT answer the question.
+
+        Your Advice Must Be:
+        1. **Simple**: Avoid terms like "asset allocation" or "fixed income". Say "savings" instead.
+        2. **Specific**: Recommend actual apps or banks in Nigeria (e.g. PiggyVest, Cowrywise, Opay, Kuda, GTBank, ALAT, etc.). Use search tools to verify current rates or features if needed.
+        3. **Actionable**: Give a clear step they can do on their phone right now.
+
+        STRICT RULE:
+        - Do NOT give complex investment advice (e.g. stock analysis, bond yields). Send them to the Investment Chat for that.
+        - However, you CAN suggest simple savings products on apps (e.g. "Use PiggyVest Safelock" or "Open a Kuda savings plan") as part of building a habit.
+
+        Response Structure:
+        - **Friendly Advice**: Your main tip in simple language.
+        - **Recommended Tool**: A specific app or bank to use for this (e.g. PiggyVest).
+        - **One Small Step**: A tiny action for today (e.g. "Download PiggyVest and save N1000").
+        """
+        
+        agent_executor = create_react_agent(self.llm, self.mcp_tools, prompt=system_msg)
+        result = await agent_executor.ainvoke({"messages": state["messages"]})
+        return {"messages": [result["messages"][-1]]}
+        
     def _route_onboarding(self, state):
         """Decides whether to start onboarding or proceed."""
-        # If 'derived_profile' exists in state, we are done.
         if state.get("derived_profile"):
             return "ready"
-            
-        # Check internal flag
         ob_state = state.get("onboarding_state", {})
         if ob_state.get("complete"):
              return "ready"
-             
-        # Else start/continue onboarding
         return "onboarding"
 
     def _check_onboarding_complete(self, state):
         ob_state = state.get("onboarding_state", {})
         if ob_state.get("complete"):
             return "complete"
-        return "end_onboarding" # Signal to end the run (wait for user)
+        return "end_onboarding" 
 
     def _route_intent(self, state):
         """Routes based on intent detected by Orchestrator."""
@@ -295,73 +343,101 @@ class InvestmentChatbot:
         
     # --- NODE IMPLEMENTATIONS ---
 
-    def _sentiment_node(self, state: AgentState):
+    async def _sentiment_node(self, state: AgentState):
         """Node: Gathers market sentiment."""
-        # We use a dedicated sentiment agent
-        # Filter tools to only include 'get_market_news' ideally, but letting it pick is fine for now
-        # Or better yet, we specifically give it only news tools if we can filter self.mcp_tools
-        
-        # Simple string matching for tools
         news_tools = [t for t in self.mcp_tools if "news" in t.name.lower() or "social" in t.name.lower()]
         if not news_tools:
-            news_tools = self.mcp_tools # Fallback
-            
+            news_tools = self.mcp_tools 
         agent_executor = create_sentiment_agent(self.llm, news_tools)
-        
-        # We invoke it with the latest user query
-        # But we need to ensure it knows WHAT to search for.
-        # The user's query is in messages[-1]
-        
-        result = agent_executor.invoke({"messages": state["messages"]})
-        
-        # We format the result to clearly indicate it's a sentiment report
+        result = await agent_executor.ainvoke({"messages": state["messages"]})
         last_msg = result["messages"][-1]
         return {"messages": [last_msg]}
 
-    def _analyst_node(self, state: AgentState):
+    async def _analyst_node(self, state: AgentState):
         """Node: The main investment agent (Proponent)."""
-        # Dynamic System Message based on Profile
         profile = state.get("user_profile", {})
         system_msg = (
-            "You are an expert Investment Analyst (The Proponent). "
-            "Your goal is to propose a high-conviction trade idea based on data.\n"
-            f"User Profile: Age {profile.get('age')}, Risk {profile.get('risk')}, "
-            f"Capital ${profile.get('capital')}, Horizon {profile.get('horizon')} years.\n"
+            "You are a Trading Analyst who speaks plain English.\n"
+            "Your job is to explain stock/ETF opportunities simply to a beginner/intermediate user.\n"
+            "You only provide advice related to:\n"
+            "- Public equities (Stocks like MTN, Airtel, Dangote)\n"
+            "- ETFs\n"
+            f"User Profile: {json.dumps(profile)}\n"
+            "SCOPE ENFORCEMENT GRID:\n"
+            "- [ALLOWED]: Stocks, ETFs, Trading Apps, Market Analysis.\n"
+            "- [PROHIBITED]: General Knowledge (e.g. 'Photosynthesis', 'Sports'), Politics, Religion.\n"
+            "- If the user asks a prohibited question, politely decline: 'I only discuss stocks and trading.'\n"
+            "Guidelines:\n"
+            "1. **Explain Why**: Don't just say 'Buy MTNN'. Say 'Buy MTNN because their profit grew by 20%'.\n"
+            "2. **Jargon-Free**: If you use a term like 'P/E Ratio', explain it immediately (e.g. 'Price vs Earnings - how expensive the stock is').\n"
+            "3. **Apps to Use**: Recommend specific trading apps operating in Nigeria (e.g. Bamboo, Chaka, Trove, Stanbic IBTC Stockbrokers) for execution.\n"
+            "4. **Risks**: Always say 'Prices can go down' in a simple way.\n"
             "Steps:\n"
-            "1. Review the Sentiment Report provided previously.\n"
-            "2. Use 'get_technical_indicators' to validate price action.\n"
-            "3. Use 'get_insider_activity' to check for conviction.\n"
-            "4. Propose a specific trade with Entry, Stop Loss, and Take Profit targets.\n"
-            "5. Cite your sources (Technicals + Sentiment + Insider).\n"
-            "DO NOT attempt to execute the trade. Just propose it for the user."
+            "1. Review Sentiment Report.\n"
+            "2. Use tools to get data.\n"
+            "3. Propose a clear trade ideas with an app recommendation.\n"
+            "4. Cite data sources.\n"
         )
         
-        # Include all tools for the analyst
-        agent_executor = create_react_agent(self.llm, self.mcp_tools, state_modifier=system_msg)
-        result = agent_executor.invoke({"messages": state["messages"]})
+        agent_executor = create_react_agent(self.llm, self.mcp_tools, prompt=system_msg)
+        result = await agent_executor.ainvoke({"messages": state["messages"]})
+        # Note: In a real implementation, we would extract structured portfolio data here
+        # For now, we will assume the LLM might output JSON if prompted, or we extract it via a tool usage
         return {"messages": [result["messages"][-1]]}
 
     def _red_team_node(self, state: AgentState):
         """Node: The Skeptic."""
-        # Use the imported function, passing our LLM
         return red_team_node(state, self.llm)
 
     def _judge_node(self, state: AgentState):
-        """Node: The Final Decision Maker."""
-        # Use the imported function, passing our LLM
-        return judge_node(state, self.llm)
+        """Node: The Final Decision Maker. Generates final recommendation."""
+        # We need to enhance the Judge to output a structured portfolio if possible
+        # For now, we rely on the existing judge prompt but will add extraction logic in persist_node
+        res = judge_node(state, self.llm)
+        return res
+
+    def _persist_portfolio_node(self, state: AgentState):
+        """Node: Persists the recommended portfolio to the database."""
+        # 1. Extract Portfolio from the last message (Naive extraction for now)
+        # Ideally, the Judge node calls a 'save_portfolio' tool or outputs strict JSON.
+        # We will iterate to improve this. For now, we save the text.
+        last_msg = state["messages"][-1].content
+        
+        # 2. Save to DB
+        try:
+            user_id = int(state["thread_id"])
+            db = next(get_db())
+            try:
+                # Create a placeholder structure since we don't have strict JSON yet
+                # In future: parse JSON from LLM output
+                portfolio_data = [{"asset": "Recommended_Action", "details": last_msg[:100]}] 
+                
+                rec = PortfolioRecommendation(
+                    user_id=user_id,
+                    portfolio=json.dumps(portfolio_data),
+                    risk_level=state.get("user_profile", {}).get("risk_profile", "unknown")
+                )
+                db.add(rec)
+                db.commit()
+            except Exception as e:
+                print(f"Error persisting portfolio: {e}")
+            finally:
+                db.close()
+        except:
+             pass
+             
+        return state
 
     async def generate_greeting(self, thread_id: str) -> str:
         """
         Generates a proactive greeting based on the user's profile.
+        Uses the Banking Consultant persona.
         """
-        
-        # 1. Fetch Profile & Username
+        # Fetch Profile & Username
         state_snapshot = {"thread_id": thread_id}
         profile_data = self._fetch_user_profile(state_snapshot)
         user_profile = profile_data.get("user_profile", {})
         
-        # Fetch Username directly for personalization
         username = "User"
         try:
             db = next(get_db())
@@ -373,76 +449,43 @@ class InvestmentChatbot:
         finally:
             db.close()
         
-        # 2. Construct Prompt (Agentic & Simple)
-        system_prompt = f"""You are 'Finance Buddy', a practical and helpful financial assistant.
+        system_prompt = f"""You are a helpful Financial Assistant acting as a Senior Banking Consultant.
         
-        User:
-        Name: {username}
-        Profile: {json.dumps(user_profile, indent=2)}
+        User: Name: {username}, Profile: {json.dumps(user_profile)}
         
-        Your Mission:
-        Greet the user by name and give them ONE concrete, actionable financial tip or opportunity available RIGHT NOW that fits their profile.
+        Mission: Greet the user and give ONE concrete, actionable banking/investment opportunity (e.g. T-Bills, Savings) available RIGHT NOW.
+        Use tools to find rates.
         
-        The user has little financial knowledge. Explain things simply (like you're talking to a friend).
-        Focus on: "What do I stand to gain?" vs "What are the risks?".
-        
-        CRITICAL INSTRUCTION:
-        You MUST use your tools (like search/news) to find REAL-TIME data before answering.
-        - If Conservative: Search for the latest "Treasury Bill rates in Nigeria". Tell them the current % return and which banks/platforms offer it (e.g. GTBank, PiggyVest, Cowrywise).
-        - If Aggressive: Search for "top performing stocks NGX this week" or "crypto trends". Mention the potential gain but warn about the risk simply.
-        - If Balanced: Search for "Money Market Fund rates Nigeria".
-        
-        Structure your answer:
-        1.  **Warm Greeting**: "Hi {username}!"
-        2.  **The Opportunity**: "Did you know you can currently earn around X% interest risk-free with Treasury Bills?" (Use real rate found from tool).
-        3.  **The Benefit**: "This means if you save N100k, you could get back N1xxk without doing anything."
-        4.  **How to get it**: "Most banks like [Bank Names found] offer this via their app."
-        5.  **Closing**: "Want me to show you how to start?"
-        
-        Keep it practical. No jargon like "yield curve" or "asset allocation". Just "Interest", "Profit", "Safety".
+        Structure:
+        1. Warm Greeting.
+        2. The Opportunity (Rate/Product).
+        3. The Benefit.
+        4. Closing.
         """
         
-        # 3. Invoke Agent (with Tools)
         try:
-            # Create a localized agent for this greeting task
-            greeting_agent = create_react_agent(self.llm, self.mcp_tools, state_modifier=system_prompt)
-            
-            # Run the agent
-            result = await greeting_agent.ainvoke({"messages": [HumanMessage(content="Find the best opportunity for me right now and greet me.")]})
+            greeting_agent = create_react_agent(self.llm, self.mcp_tools, prompt=system_prompt)
+            result = await greeting_agent.ainvoke({"messages": [HumanMessage(content="Find the best opportunity and greet me.")]})
             return result["messages"][-1].content
-            
         except Exception as e:
-            print(f"Greeting generation failed: {e}")
             return f"Hello {username}! I'm Finance Buddy. How can I help you grow your money today?"
 
     async def chat(self, user_input: str, thread_id: str = "1", intent: str = None):
         """
         Run the graph for the given user input.
-        thread_id: Optional override for the session ID.
-        intent: Optional forced intent (e.g. 'budgeting').
         """
-        # Use provided thread_id or fall back to instance default
         tid = thread_id if thread_id else self.thread_id
         config = {"configurable": {"thread_id": tid}}
-        
-        # Run the graph
         final_response = "No response generated."
         
-        # Prepare input state
         input_state = {"messages": [HumanMessage(content=user_input)]}
         if intent:
             input_state["intent"] = intent
         
-        async for event in self.graph.astream(
-            input_state,
-            config=config
-        ):
-            # We can log events here if needed
-            # Or capture intermediate outputs
+        async for event in self.graph.astream(input_state, config=config):
             for node, content in event.items():
                  if "messages" in content and content["messages"]:
                      msg = content["messages"][-1]
-                     # We might want to stream this back to the user, but for now we just return the final one
                      final_response = msg.content
         
         return final_response

@@ -19,17 +19,27 @@ def load_questions(filename):
         print(f"Error loading questions from {filename}: {e}")
         return []
 
-def get_trading_onboarding_questions():
-    """Returns onboarding questions customized for active traders."""
-    return load_questions("trading_onboarding_questions.json")
+def load_full_schema(filename):
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        resources_dir = os.path.join(os.path.dirname(base_dir), "resources") 
+        filepath = os.path.join(resources_dir, filename)
+        
+        with open(filepath, "r") as f:
+            data = json.load(f)
+            return data
+    except Exception as e:
+        print(f"Error loading schema from {filename}: {e}")
+        return {}
 
-def get_conservative_onboarding_questions():
-    """Returns onboarding questions customized for conservative investors."""
-    return load_questions("conservative_onboarding_questions.json")
+def get_onboarding_schema():
+    """Returns the single unified onboarding schema."""
+    return load_full_schema("onboarding_questions.json")
 
 def get_onboarding_questions():
-    """Returns the default/general onboarding questions."""
-    return load_questions("financial_onboarding_questions.json")
+    """Returns the list of questions from the unified schema."""
+    return load_questions("onboarding_questions.json")
+
 
 def onboarding_node(state):
     """

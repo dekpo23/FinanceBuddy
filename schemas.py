@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 
@@ -37,8 +38,17 @@ class OnboardingSubmission(BaseModel):
 class OnboardingResponse(BaseModel):
     id: int
     user_id: int
-    answers: Dict[str, Any] # Request manual parsing if using String in DB
-    derived_profile: Optional[Dict[str, Any]] = None
+    answers: dict # Request manual parsing if using String in DB
+    derived_profile: Optional[dict] = None
     
+    class Config:
+        from_attributes = True
+
+class PortfolioRecommendationResponse(BaseModel):
+    id: int
+    portfolio: list[dict] # List of assets with weights
+    risk_level: Optional[str] = None
+    created_at: datetime
+
     class Config:
         from_attributes = True

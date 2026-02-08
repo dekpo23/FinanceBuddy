@@ -22,4 +22,4 @@ def create_sentiment_agent(llm, tools):
     # For simplicity, we give all, or assume the caller filters.
     # Actually, let's just use all for now as the prompt restricts behavior.
     
-    return create_react_agent(llm, tools, state_modifier=system_message)
+    return create_react_agent(llm, tools, prompt=system_message)
