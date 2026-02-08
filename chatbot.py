@@ -351,7 +351,11 @@ class InvestmentChatbot:
         agent_executor = create_sentiment_agent(self.llm, news_tools)
         result = await agent_executor.ainvoke({"messages": state["messages"]})
         last_msg = result["messages"][-1]
-        return {"messages": [last_msg]}
+        
+        # Convert AIMessage to HumanMessage for the next agent to see it as input "context"
+        # rather than a previous AI response, to avoid Gemini 400 (two AI msgs in a row or ending in AI for generation)
+        sentiment_context = HumanMessage(content=f"MARKET SENTIMENT REPORT:\n{last_msg.content}")
+        return {"messages": [sentiment_context]}
 
     async def _analyst_node(self, state: AgentState):
         """Node: The main investment agent (Proponent)."""
@@ -478,7 +482,7 @@ class InvestmentChatbot:
         config = {"configurable": {"thread_id": tid}}
         final_response = "No response generated."
         
-        input_state = {"messages": [HumanMessage(content=user_input)]}
+        input_state = {"messages": [HumanMessage(content=user_input)], "thread_id": tid}
         if intent:
             input_state["intent"] = intent
         

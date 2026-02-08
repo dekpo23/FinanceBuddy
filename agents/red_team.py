@@ -9,11 +9,21 @@ def red_team_node(state, llm):
     """
     messages = state["messages"]
     
+    last_message = messages[-1]
+    
     # Check if last_message is dict
     if isinstance(last_message, dict):
         last_msg_content = last_message.get("content", "")
     else:
         last_msg_content = getattr(last_message, "content", "")
+    
+    prompt = """
+    You are the "Red Team" Skeptic. Your job is to find flaws in the previous investment analysis.
+    - Highlight risks (market, regulatory, company-specific).
+    - Question assumptions made by the proponent.
+    - Be critical but constructive.
+    - If the analysis is sound, acknowledge it but still point out potential downsides.
+    """
     
     response = llm.invoke([SystemMessage(content=prompt), HumanMessage(content=last_msg_content)])
     
